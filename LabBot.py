@@ -103,3 +103,10 @@ if __name__ == '__main__':
         print(f"⚠️ ВНИМАНИЕ: Файл '{THEME_FILE}' не найден в папке с ботом!")
         print(f"   Поместите файл темы в ту же директорию, что и скрипт.")
     bot.infinity_polling()
+
+# Ваш существующий код бота...
+
+@app.api_route("/livez", methods=["GET", "HEAD"])
+async def live_check():
+    # Здесь ничего сложного не делаем, просто отвечаем "я жив"
+    return {"status": "ok"}
