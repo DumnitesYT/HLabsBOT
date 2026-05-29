@@ -24,36 +24,35 @@ app = Flask(__name__)
 
 # ------------ НАСТРОЙКИ ------------
 THEME_FILE = 'Lazurite Dream.hwt'
-ICONS_ZIP = "icons.zip"      # архив с иконками (PNG файлы)
-OTHERS_ZIP = "others.zip"    # архив с остальными файлами (preview, unlock, wallpaper, com.huawei.android.launcher и т.д.)
+ICONS_ZIP = "icons.zip"
+OTHERS_ZIP = "others.zip"
 
-# Твоя ссылка на Pastebin
 ALLOWED_USERS_URL = 'https://pastebin.com/raw/VbeVVK9T'
-
-# Получаем URL сервера
 SERVER_URL = os.environ.get('RENDER_EXTERNAL_URL', 'http://localhost:8080')
 
 # Кеш разрешенных пользователей
 allowed_users_cache = {}
 cache_time = 0
 
-# СТОКОВЫЙ ЛАЗУРЕВЫЙ ЦВЕТ HUAWEI
-STOCK_HUE = 208
-STOCK_SATURATION = 67
-STOCK_VALUE = 83
-
-# Диапазон определения "стокового лазуревого"
-HUE_RANGE = 15
-SATURATION_MIN = 30
+# РАСШИРЕННЫЙ ДИАПАЗОН ЛАЗУРЕВЫХ ЦВЕТОВ (Huawei + голубые оттенки)
+# Стокувый цвет #4590D3 (HSV: 208, 67, 83)
+# Добавляем больше оттенков синего и голубого
+LAZURE_HUES = [208, 210, 205, 200, 195, 215, 220]  # разные оттенки лазури
+HUE_RANGE = 25  # расширенный диапазон ±25°
+SATURATION_MIN = 20  # снизил порог насыщенности
 
 def is_stock_lazure_color(r, g, b):
-    """Проверяет, является ли цвет стоковым лазуревым Huawei"""
+    """Проверяет, является ли цвет лазуревым (расширенный диапазон)"""
     h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
     h_deg = h * 360
     s_percent = s * 100
-
-    return (abs(h_deg - STOCK_HUE) <= HUE_RANGE and
-            s_percent >= SATURATION_MIN)
+    
+    # Проверяем, что оттенок в диапазоне лазуревых (синий/голубой)
+    # Диапазон от 170° (голубой) до 250° (синий)
+    is_blue_hue = (150 <= h_deg <= 260)
+    is_saturated = s_percent >= SATURATION_MIN
+    
+    return is_blue_hue and is_saturated
 
 def get_allowed_users():
     """Получает список разрешенных user_id из Pastebin"""
@@ -82,7 +81,6 @@ def get_allowed_users():
         return allowed_users_cache
 
 def is_allowed(user_id):
-    """Проверяет, разрешен ли пользователь"""
     allowed = get_allowed_users()
     return user_id in allowed
 
@@ -97,11 +95,10 @@ COLOR_MAP = {
     "cyan": {"rgb": (80, 255, 220), "hex": "#50FFDC", "name": "💎 Бирюзовый"},
 }
 
-# Временные данные для запоминания имени темы
 user_theme_name = {}
 
 def change_icon_color_lazure_only(image_bytes, target_rgb):
-    """Меняет цвет ТОЛЬКО стоковых лазуревых областей иконки (работает с байтами)"""
+    """Меняет цвет ТОЛЬКО лазуревых областей иконки"""
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
         pixels = img.load()
@@ -117,26 +114,27 @@ def change_icon_color_lazure_only(image_bytes, target_rgb):
 
                 if is_stock_lazure_color(r, g, b):
                     total += 1
-                    stock_brightness = (r + g + b) / 3 / 255
+                    # Сохраняем яркость исходного пикселя
+                    brightness = (r + g + b) / 3 / 255
 
-                    new_r = int(target_rgb[0] * min(1, stock_brightness * 1.2))
-                    new_g = int(target_rgb[1] * min(1, stock_brightness * 1.2))
-                    new_b = int(target_rgb[2] * min(1, stock_brightness * 1.2))
+                    new_r = int(target_rgb[0] * min(1, brightness * 1.3))
+                    new_g = int(target_rgb[1] * min(1, brightness * 1.3))
+                    new_b = int(target_rgb[2] * min(1, brightness * 1.3))
 
                     pixels[x, y] = (new_r, new_g, new_b, a)
                     changed += 1
 
-        # Сохраняем в байты
         output = io.BytesIO()
         img.save(output, format="PNG")
-        print(f"  Перекрашено {changed}/{total} пикселей")
+        if total > 0:
+            print(f"  Перекрашено {changed}/{total} пикселей ({changed*100//total}%)")
         return output.getvalue()
     except Exception as e:
         print(f"Ошибка перекраски: {e}")
         return None
 
 def update_description_xml(build_folder, theme_name):
-    """Обновляет description.xml с новым именем темы"""
+    """Создаёт description.xml с новым именем темы"""
     desc_file = os.path.join(build_folder, "description.xml")
 
     xml_content = f"""<HwTheme>
@@ -153,9 +151,10 @@ def update_description_xml(build_folder, theme_name):
 
     with open(desc_file, 'w', encoding='utf-8') as f:
         f.write(xml_content)
+    print(f"✅ Создан description.xml с именем: {theme_name}")
 
 def build_theme(color_key, chat_id, theme_name, message_id=None):
-    """Собирает тему с выбранным цветом и именем (из архивов)"""
+    """Собирает тему из архивов icons.zip и others.zip"""
     if color_key not in COLOR_MAP:
         return None
 
@@ -169,7 +168,6 @@ def build_theme(color_key, chat_id, theme_name, message_id=None):
     )
 
     try:
-        # Проверяем наличие архивов
         if not os.path.exists(ICONS_ZIP):
             bot.edit_message_text(
                 f"❌ *Ошибка:* Архив `{ICONS_ZIP}` не найден!",
@@ -185,19 +183,19 @@ def build_theme(color_key, chat_id, theme_name, message_id=None):
             shutil.rmtree(build_folder)
         os.makedirs(build_folder)
 
+        # ========== 1. ОБРАБОТКА ICONS.ZIP ==========
         bot.edit_message_text(
-            f"🎨 *Извлекаю иконки из {ICONS_ZIP}...*",
+            f"📦 *Обрабатываю иконки из {ICONS_ZIP}...*",
             chat_id,
             status_msg.message_id,
             parse_mode='Markdown'
         )
 
-        # РАБОТА С ICONS.ZIP
-        icons_data = {}  # {имя_файла: байты}
-
+        icons_data = {}
+        
         with zipfile.ZipFile(ICONS_ZIP, 'r') as icons_zip:
             icon_files = [f for f in icons_zip.namelist() if f.lower().endswith('.png')]
-
+            
             if not icon_files:
                 bot.edit_message_text(
                     f"❌ *Ошибка:* В архиве `{ICONS_ZIP}` нет PNG файлов!",
@@ -206,71 +204,92 @@ def build_theme(color_key, chat_id, theme_name, message_id=None):
                     parse_mode='Markdown'
                 )
                 return None
-
+            
             bot.edit_message_text(
-                f"🎨 *Перекрашиваю {len(icon_files)} иконок в {color_name}...*",
+                f"🎨 *Перекрашиваю {len(icon_files)} иконок в {color_name}...*\n(это может занять до минуты)",
                 chat_id,
                 status_msg.message_id,
                 parse_mode='Markdown'
             )
-
-            # Читаем и перекрашиваем каждую иконку
-            for icon_name in icon_files:
+            
+            for i, icon_name in enumerate(icon_files):
                 with icons_zip.open(icon_name) as f:
                     original_bytes = f.read()
-
-                # Перекрашиваем
+                
                 recolored_bytes = change_icon_color_lazure_only(original_bytes, target_rgb)
                 if recolored_bytes:
                     icons_data[icon_name] = recolored_bytes
-
-        # СОЗДАЁМ ФАЙЛ "icons" (архив с перекрашенными иконками)
+                
+                # Показываем прогресс каждые 10 иконок
+                if (i + 1) % 10 == 0 or (i + 1) == len(icon_files):
+                    try:
+                        bot.edit_message_text(
+                            f"🎨 *Перекрашиваю иконки...* {i+1}/{len(icon_files)}\n\n✨ {color_name} цвет",
+                            chat_id,
+                            status_msg.message_id,
+                            parse_mode='Markdown'
+                        )
+                    except:
+                        pass
+        
+        # Создаём файл "icons" (архив с перекрашенными иконками)
         icons_archive_path = os.path.join(build_folder, "icons")
         with zipfile.ZipFile(icons_archive_path, 'w', zipfile.ZIP_DEFLATED) as icons_zip_out:
             for icon_name, icon_bytes in icons_data.items():
                 icons_zip_out.writestr(icon_name, icon_bytes)
+        
+        print(f"✅ Создан файл icons с {len(icons_data)} иконками")
 
-        # РАБОТА С OTHERS.ZIP (копируем остальные файлы)
+        # ========== 2. ОБРАБОТКА OTHERS.ZIP (ВСЕ ФАЙЛЫ) ==========
         if os.path.exists(OTHERS_ZIP):
             bot.edit_message_text(
-                f"📁 *Извлекаю остальные файлы из {OTHERS_ZIP}...*",
+                f"📁 *Копирую файлы из {OTHERS_ZIP}...*",
                 chat_id,
                 status_msg.message_id,
                 parse_mode='Markdown'
             )
-
+            
             with zipfile.ZipFile(OTHERS_ZIP, 'r') as others_zip:
-                for item in others_zip.namelist():
-                    # Пропускаем папки (нам нужны только файлы)
-                    if item.endswith('/'):
-                        continue
-
+                all_files = [f for f in others_zip.namelist() if not f.endswith('/')]
+                
+                for file_path in all_files:
                     # Извлекаем файл
-                    with others_zip.open(item) as f:
+                    with others_zip.open(file_path) as f:
                         file_bytes = f.read()
-
+                    
                     # Определяем путь назначения
-                    dst_path = os.path.join(build_folder, item)
-
+                    dst_path = os.path.join(build_folder, file_path)
+                    
                     # Создаём папки если нужно
                     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-
+                    
                     # Сохраняем файл
                     with open(dst_path, 'wb') as dst_file:
                         dst_file.write(file_bytes)
+                    
+                    print(f"  📄 {file_path}")
+            
+            print(f"✅ Скопировано {len(all_files)} файлов из others.zip")
         else:
             bot.edit_message_text(
-                f"⚠️ *Предупреждение:* Архив `{OTHERS_ZIP}` не найден, создаю тему только из иконок",
+                f"⚠️ *Предупреждение:* Архив `{OTHERS_ZIP}` не найден",
                 chat_id,
                 status_msg.message_id,
                 parse_mode='Markdown'
             )
             time.sleep(1)
 
-        # Обновляем description.xml (если он был в others.zip, он перезапишется)
+        # ========== 3. СОЗДАЁМ DESCRIPTION.XML ==========
         update_description_xml(build_folder, theme_name)
 
-        # Создаём ZIP архив (.hwt)
+        # ========== 4. УПАКОВЫВАЕМ В .HWT ==========
+        bot.edit_message_text(
+            f"📦 *Упаковываю тему в .hwt...*",
+            chat_id,
+            status_msg.message_id,
+            parse_mode='Markdown'
+        )
+
         safe_name = theme_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
         output_file = f"Theme_{safe_name}_{color_key}_{chat_id}.hwt"
 
@@ -289,7 +308,7 @@ def build_theme(color_key, chat_id, theme_name, message_id=None):
             bot.send_document(
                 chat_id,
                 f,
-                caption=f"✅ *Готово!*\n\n🎨 Тема «{theme_name}» собрана в цвете {color_name}\n📦 Размер: {os.path.getsize(output_file) / 1024:.1f} KB\n\n✨ Иконки перекрашены успешно!",
+                caption=f"✅ *Готово!*\n\n🎨 Тема «{theme_name}» собрана в цвете {color_name}\n📦 Размер: {os.path.getsize(output_file) / 1024:.1f} KB",
                 reply_markup=main_menu(),
                 parse_mode='Markdown'
             )
@@ -312,7 +331,7 @@ def build_theme(color_key, chat_id, theme_name, message_id=None):
         )
         return None
 
-# ========== МЕНЮ (без изменений) ==========
+# ========== МЕНЮ (всё то же самое) ==========
 def main_menu():
     keyboard = InlineKeyboardMarkup(row_width=1)
     btn_themes = InlineKeyboardButton('📁 Темы', callback_data='themes')
@@ -348,7 +367,6 @@ def after_download_menu():
     keyboard.add(btn_guide, btn_back)
     return keyboard
 
-# ========== ОТПРАВКА ТЕМЫ ==========
 def send_lazurite_theme(chat_id, message_id=None):
     if not os.path.exists(THEME_FILE):
         bot.send_message(chat_id, "❌ Файл темы не найден!", reply_markup=main_menu())
@@ -386,7 +404,6 @@ def send_lazurite_theme(chat_id, message_id=None):
         except:
             pass
 
-# ========== ТЕКСТ ГАЙДА ==========
 GUIDE_TEXT = (
     "📱 *Как установить тему .hwt на Huawei:*\n\n"
     "1️⃣ Скачайте файл темы с расширением `.hwt` через этого бота.\n"
@@ -400,7 +417,6 @@ GUIDE_TEXT = (
     "✅ Готово!"
 )
 
-# ========== ОБРАБОТЧИКИ ==========
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     try:
@@ -466,7 +482,6 @@ def get_theme_name(message, chat_id, original_message_id):
     except:
         pass
 
-# ========== АВТОПИНГ ==========
 def auto_ping():
     while True:
         try:
@@ -475,7 +490,6 @@ def auto_ping():
             pass
         time.sleep(240)
 
-# ========== FLASK ДЛЯ RENDER ==========
 @app.route('/')
 def health_check():
     return "Bot is running", 200
@@ -495,7 +509,6 @@ def run_flask():
     finally:
         sys.stdout = old_stdout
 
-# ========== ЗАПУСК ==========
 if __name__ == '__main__':
     print("🤖 HuwiLabs bot: Running!")
     print(f"👤 Создатель: @crqckoff")
@@ -511,7 +524,7 @@ if __name__ == '__main__':
         print(f"✅ Архив иконок найден")
 
     if not os.path.exists(OTHERS_ZIP):
-        print(f"⚠️ Архив '{OTHERS_ZIP}' не найден (будет создана тема только из иконок)")
+        print(f"⚠️ Архив '{OTHERS_ZIP}' не найден")
     else:
         print(f"✅ Архив others найден")
 
