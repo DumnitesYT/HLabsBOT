@@ -37,8 +37,18 @@ SUPPORT_ADMIN_ID = 6778865145
 SUPPORT_GROUP_ID = -1003763489689
 SUPPORT_GROUP_LINK = 'https://t.me/podderzhkahuwi'
 
+# Список иконок, которые НЕ НАДО перекрашивать и включать в icons
+IGNORE_ICONS = [
+    'icon_background_01.png',
+    'icon_border.png',
+    'icon_mask.png',
+    'icon_shortcut.png',
+    'icon_shortcut_arrow.png',
+    'icon_shortcut_mask.png'
+]
+
 user_languages = {}
-user_temp_data = {}  # для хранения временных данных (например, обоев)
+user_temp_data = {}
 
 def get_lang(user_id):
     return user_languages.get(user_id, None)
@@ -83,7 +93,7 @@ TEXTS = {
         "btn_custom_color": "🎨 Свой цвет",
         "send_wallpaper": "🖼️ Отправьте изображение (обои), чтобы бот подобрал цвет иконок.\n\n(Отправьте фото в чат)",
         "wallpaper_received": "✅ Обои получены. Анализирую цвет...",
-        "dominant_color": "🎨 Доминирующий цвет: {color}\n🔄 Сдвиг оттенка: {shift}°\n\n📝 Теперь введите название темы:",
+        "dominant_color": "🎨 Основной цвет: {color}\n🔄 Сдвиг оттенка: {shift}°\n🎨 Насыщенность иконок: {sat}%\n\n📝 Теперь введите название темы:",
         "error_no_image": "❌ Пожалуйста, отправьте изображение.",
     },
     "en": {
@@ -121,7 +131,7 @@ TEXTS = {
         "btn_custom_color": "🎨 Custom color",
         "send_wallpaper": "🖼️ Send an image (wallpaper) to auto-detect icon color.\n\n(Send photo in chat)",
         "wallpaper_received": "✅ Wallpaper received. Analyzing color...",
-        "dominant_color": "🎨 Dominant color: {color}\n🔄 Hue shift: {shift}°\n\n📝 Now enter theme name:",
+        "dominant_color": "🎨 Dominant color: {color}\n🔄 Hue shift: {shift}°\n🎨 Icon saturation: {sat}%\n\n📝 Now enter theme name:",
         "error_no_image": "❌ Please send an image.",
     }
 }
@@ -132,94 +142,51 @@ cache_time = 0
 # Базовый оттенок лазуревых иконок (Hue ~200°)
 BASE_HUE = 200
 
-def get_dominant_color(image_bytes):
-    """Возвращает доминирующий RGB и Hue изображения"""
+def get_optimized_color(image_bytes):
+    """Возвращает оптимальный цвет для иконок (насыщенный, яркий) и сдвиг оттенка"""
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        # Уменьшаем размер для ускорения
-        img.thumbnail((100, 100))
+        img.thumbnail((200, 200))
         pixels = list(img.getdata())
-        # Группируем похожие цвета (упрощённо)
-        color_counts = Counter(pixels)
-        # Берём самый частый цвет
-        dominant_rgb = color_counts.most_common(1)[0][0]
-        r, g, b = dominant_rgb
-        h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
-        hue_deg = h * 360
-        # Оптимальный сдвиг: target_hue - BASE_HUE, но в диапазоне 0-360
-        shift = (hue_deg - BASE_HUE) % 360
-        # Ограничиваем, чтобы не было слишком больших сдвигов (оставляем в разумных пределах)
+        # Ищем цвет с максимальной насыщенностью и достаточной яркостью
+        best_color = None
+        best_score = -1
+        best_hue = 0
+        for rgb in set(pixels):  # уникальные цвета для скорости
+            r, g, b = rgb
+            h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
+            # Оценка: насыщенность * яркость (чем ярче и насыщеннее, тем лучше)
+            score = s * v
+            if score > best_score and v > 0.3 and s > 0.3:
+                best_score = score
+                best_color = rgb
+                best_hue = h * 360
+        if best_color is None:
+            # Fallback: самый частый цвет
+            color_counts = Counter(pixels)
+            best_color = color_counts.most_common(1)[0][0]
+            r, g, b = best_color
+            h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
+            best_hue = h * 360
+        shift = (best_hue - BASE_HUE) % 360
         if shift > 180:
             shift -= 360
-        # Оставляем в пределах от -180 до 180, но для читаемости оставим как есть
-        return dominant_rgb, hue_deg, shift
+        # Дополнительно увеличиваем насыщенность иконок на 20% (но не выше 1)
+        sat_boost = 1.2
+        return best_color, best_hue, shift, sat_boost
     except Exception as e:
-        print(f"Ошибка анализа цвета: {e}")
-        return None, None, None
+        print(f"Ошибка анализа: {e}")
+        return None, None, None, None
 
-# ========== ОСТАЛЬНЫЕ ФУНКЦИИ (Hue shift, сборка темы и т.д.) ==========
-HUE_SHIFTS = {
-    "red": 160,
-    "green": 280,
-    "blue": 0,
-    "purple": 70,
-    "orange": 190,
-    "pink": 130,
-    "cyan": 340,
-}
-
-COLOR_NAMES = {
-    "red": {"ru": "🔴 Красный", "en": "🔴 Red"},
-    "green": {"ru": "🟢 Зелёный", "en": "🟢 Green"},
-    "blue": {"ru": "🔵 Синий", "en": "🔵 Blue"},
-    "purple": {"ru": "🟣 Фиолетовый", "en": "🟣 Purple"},
-    "orange": {"ru": "🟠 Оранжевый", "en": "🟠 Orange"},
-    "pink": {"ru": "🌸 Розовый", "en": "🌸 Pink"},
-    "cyan": {"ru": "💎 Бирюзовый", "en": "💎 Cyan"},
-}
-
-COLOR_PREFIX = {
-    "red": "R",
-    "green": "G",
-    "blue": "B",
-    "purple": "P",
-    "orange": "O",
-    "pink": "Pk",
-    "cyan": "C",
-    "custom": "Cst"
-}
-
-def transliterate(text):
-    mapping = {
-        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
-        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
-        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
-        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch', 'ъ': '',
-        'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
-        'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'Yo',
-        'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
-        'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
-        'Ф': 'F', 'Х': 'H', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Sch', 'Ъ': '',
-        'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya'
-    }
-    result = []
-    for ch in text:
-        if ch in mapping:
-            result.append(mapping[ch])
-        elif ch.isalnum() or ch in (' ', '_', '-', '.'):
-            result.append(ch)
-        else:
-            result.append('_')
-    return ''.join(result).replace(' ', '_')
-
-def hue_shift_pixel(r, g, b, shift_deg):
+def hue_shift_pixel_with_sat(r, g, b, shift_deg, sat_boost=1.0):
     h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
     h_deg = (h * 360 + shift_deg) % 360
     h = h_deg / 360
+    s = min(1.0, s * sat_boost)
     r2, g2, b2 = colorsys.hsv_to_rgb(h, s, v)
     return int(r2 * 255), int(g2 * 255), int(b2 * 255)
 
-def change_icon_hue_shift(image_bytes, shift_deg):
+def change_icon_hue_shift_advanced(image_bytes, shift_deg, sat_boost=1.0):
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
         pixels = img.load()
@@ -229,14 +196,14 @@ def change_icon_hue_shift(image_bytes, shift_deg):
                 if a < 50:
                     continue
                 h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
-                if s > 0.1:
-                    new_r, new_g, new_b = hue_shift_pixel(r, g, b, shift_deg)
+                if s > 0.05:  # даже слабонасыщенные меняем
+                    new_r, new_g, new_b = hue_shift_pixel_with_sat(r, g, b, shift_deg, sat_boost)
                     pixels[x, y] = (new_r, new_g, new_b, a)
         output = io.BytesIO()
         img.save(output, format="PNG")
         return output.getvalue()
     except Exception as e:
-        print(f"Ошибка перекраски: {e}")
+        print(f"Ошибка: {e}")
         return None
 
 def get_allowed_users():
@@ -264,8 +231,7 @@ def is_allowed(user_id):
 
 user_theme_name = {}
 
-def build_theme_with_shift(chat_id, theme_name, shift_deg, color_name, output_filename, lang="ru"):
-    """Общая функция сборки темы с заданным сдвигом"""
+def build_theme_with_shift(chat_id, theme_name, shift_deg, sat_boost, color_name, output_filename, lang="ru"):
     status_msg = bot.send_message(
         chat_id,
         TEXTS[lang]["building_start"].format(name=theme_name, color=color_name),
@@ -280,40 +246,51 @@ def build_theme_with_shift(chat_id, theme_name, shift_deg, color_name, output_fi
             return None
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            # Копируем шаблон
             template_path = os.path.join(tmpdir, "template.hwt")
             shutil.copy2(EXAMPLE_THEME, template_path)
             extract_dir = os.path.join(tmpdir, "extracted")
             os.makedirs(extract_dir)
+            # Распаковываем без сжатия
             with zipfile.ZipFile(template_path, 'r') as zf:
                 zf.extractall(extract_dir)
 
+            # 1. Перекрашиваем иконки
             bot.edit_message_text(TEXTS[lang]["building_icons"], chat_id, status_msg.message_id, parse_mode='Markdown')
             with zipfile.ZipFile(ICONS_ZIP, 'r') as icons_zip:
                 icon_files = [f for f in icons_zip.namelist() if f.lower().endswith('.png')]
-                if not icon_files:
-                    bot.edit_message_text(f"❌ В {ICONS_ZIP} нет PNG!", chat_id, status_msg.message_id)
+                # Фильтруем служебные иконки
+                filtered_icons = [f for f in icon_files if os.path.basename(f).lower() not in [i.lower() for i in IGNORE_ICONS]]
+                skipped = len(icon_files) - len(filtered_icons)
+                if skipped:
+                    print(f"Пропущено {skipped} служебных иконок")
+                if not filtered_icons:
+                    bot.edit_message_text(f"❌ Нет иконок для перекраски!", chat_id, status_msg.message_id)
                     return None
                 shifted_icons = {}
-                for i, icon_name in enumerate(icon_files):
+                for i, icon_name in enumerate(filtered_icons):
                     with icons_zip.open(icon_name) as f:
                         original = f.read()
-                    shifted = change_icon_hue_shift(original, shift_deg)
+                    shifted = change_icon_hue_shift_advanced(original, shift_deg, sat_boost)
                     if shifted:
-                        base = os.path.basename(icon_name)
-                        clean = re.sub(r'[^a-zA-Z0-9._-]', '_', base)
+                        # Нормализуем имя: нижний регистр, без пробелов и спецсимволов
+                        base = os.path.basename(icon_name).lower()
+                        clean = re.sub(r'[^a-z0-9._-]', '_', base)
                         shifted_icons[clean] = shifted
                     if (i+1) % 10 == 0:
                         try:
-                            bot.edit_message_text(f"🖌️ {i+1}/{len(icon_files)}", chat_id, status_msg.message_id, parse_mode='Markdown')
+                            bot.edit_message_text(f"🖌️ {i+1}/{len(filtered_icons)}", chat_id, status_msg.message_id, parse_mode='Markdown')
                         except:
                             pass
 
+            # Создаём новый файл icons (ZIP без сжатия, режим STORED)
             new_icons_path = os.path.join(extract_dir, "icons")
-            with zipfile.ZipFile(new_icons_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(new_icons_path, 'w', zipfile.ZIP_STORED) as zf:
                 for name, data in shifted_icons.items():
                     zf.writestr(name, data)
 
-            safe_theme_name = transliterate(theme_name)
+            # 2. Создаём новый description.xml
+            safe_theme_name = transliterate(theme_name).lower()
             desc_path = os.path.join(extract_dir, "description.xml")
             xml_content = f"""<HwTheme>
 <title>{safe_theme_name}</title>
@@ -329,9 +306,10 @@ def build_theme_with_shift(chat_id, theme_name, shift_deg, color_name, output_fi
             with open(desc_path, 'w', encoding='utf-8') as f:
                 f.write(xml_content)
 
+            # 3. Упаковываем обратно в .hwt (без сжатия)
             bot.edit_message_text(TEXTS[lang]["building_pack"], chat_id, status_msg.message_id, parse_mode='Markdown')
             out_file = os.path.join(os.getcwd(), output_filename)
-            with zipfile.ZipFile(out_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(out_file, 'w', zipfile.ZIP_STORED) as zf:
                 for root, _, files in os.walk(extract_dir):
                     for file in files:
                         full = os.path.join(root, file)
@@ -359,22 +337,74 @@ def build_theme_with_shift(chat_id, theme_name, shift_deg, color_name, output_fi
         bot.edit_message_text(f"❌ Ошибка:\n`{str(e)}`", chat_id, status_msg.message_id, parse_mode='Markdown')
         return None
 
+def transliterate(text):
+    mapping = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch', 'ъ': '',
+        'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+        'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'Yo',
+        'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+        'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+        'Ф': 'F', 'Х': 'H', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Sch', 'Ъ': '',
+        'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya'
+    }
+    result = []
+    for ch in text:
+        if ch in mapping:
+            result.append(mapping[ch])
+        elif ch.isalnum() or ch in (' ', '_', '-', '.'):
+            result.append(ch)
+        else:
+            result.append('_')
+    return ''.join(result).replace(' ', '_')
+
+# ========== ПРЕДУСТАНОВЛЕННЫЕ ЦВЕТА ==========
+HUE_SHIFTS = {
+    "red": 160,
+    "green": 280,
+    "blue": 0,
+    "purple": 70,
+    "orange": 190,
+    "pink": 130,
+    "cyan": 340,
+}
+COLOR_NAMES = {
+    "red": {"ru": "🔴 Красный", "en": "🔴 Red"},
+    "green": {"ru": "🟢 Зелёный", "en": "🟢 Green"},
+    "blue": {"ru": "🔵 Синий", "en": "🔵 Blue"},
+    "purple": {"ru": "🟣 Фиолетовый", "en": "🟣 Purple"},
+    "orange": {"ru": "🟠 Оранжевый", "en": "🟠 Orange"},
+    "pink": {"ru": "🌸 Розовый", "en": "🌸 Pink"},
+    "cyan": {"ru": "💎 Бирюзовый", "en": "💎 Cyan"},
+}
+COLOR_PREFIX = {
+    "red": "R",
+    "green": "G",
+    "blue": "B",
+    "purple": "P",
+    "orange": "O",
+    "pink": "Pk",
+    "cyan": "C",
+    "custom": "Cst"
+}
+
 def build_theme_preset(color_key, chat_id, theme_name, lang="ru"):
     shift_deg = HUE_SHIFTS.get(color_key, 0)
     color_name = COLOR_NAMES.get(color_key, {}).get(lang, color_key)
     prefix = COLOR_PREFIX.get(color_key, "X")
     random_digits = str(random.randint(10, 99))
     output_filename = f"Theme{prefix}{random_digits}.hwt"
-    return build_theme_with_shift(chat_id, theme_name, shift_deg, color_name, output_filename, lang)
+    # Для предустановленных цветов sat_boost = 1.0 (без усиления насыщенности)
+    return build_theme_with_shift(chat_id, theme_name, shift_deg, 1.0, color_name, output_filename, lang)
 
-def build_theme_custom(chat_id, theme_name, shift_deg, color_rgb, lang="ru"):
-    # Формируем название цвета из RGB
-    color_hex = "#{:02x}{:02x}{:02x}".format(*color_rgb)
+def build_theme_custom(chat_id, theme_name, shift_deg, sat_boost, color_hex, lang="ru"):
     color_name = f"🎨 Свой ({color_hex})"
     prefix = "Cst"
     random_digits = str(random.randint(10, 99))
     output_filename = f"Theme{prefix}{random_digits}.hwt"
-    return build_theme_with_shift(chat_id, theme_name, shift_deg, color_name, output_filename, lang)
+    return build_theme_with_shift(chat_id, theme_name, shift_deg, sat_boost, color_name, output_filename, lang)
 
 # ========== МЕНЮ ==========
 def main_menu(lang="ru"):
@@ -488,14 +518,11 @@ def callback_handler(call):
                 return
             bot.edit_message_text("🎨 *Выберите вариант:*", call.message.chat.id, call.message.message_id, reply_markup=builder_menu(lang), parse_mode='Markdown')
         elif call.data == 'custom_color':
-            # Запрашиваем обои
             msg = bot.send_message(call.message.chat.id, TEXTS[lang]["send_wallpaper"], parse_mode='Markdown')
             bot.register_next_step_handler(msg, process_wallpaper, call.message.chat.id, lang)
-            # Не редактируем текущее сообщение, просто отвечаем
             bot.answer_callback_query(call.id)
         elif call.data.startswith('color_'):
             color = call.data.replace('color_', '')
-            # Запрашиваем название темы
             msg = bot.send_message(call.message.chat.id, TEXTS[lang]["enter_theme_name"], parse_mode='Markdown')
             bot.register_next_step_handler(msg, get_theme_name_for_preset, color, call.message.chat.id, lang)
         elif call.data == 'guide':
@@ -513,20 +540,17 @@ def process_wallpaper(message, chat_id, lang):
     if not message.photo:
         bot.send_message(chat_id, TEXTS[lang]["error_no_image"], reply_markup=builder_menu(lang))
         return
-    # Скачиваем фото
     file_id = message.photo[-1].file_id
     file_info = bot.get_file(file_id)
     downloaded_file = bot.download_file(file_info.file_path)
-    # Анализируем цвет
-    dominant_rgb, hue_deg, shift = get_dominant_color(downloaded_file)
-    if dominant_rgb is None:
+    best_color, best_hue, shift, sat_boost = get_optimized_color(downloaded_file)
+    if best_color is None:
         bot.send_message(chat_id, "❌ Не удалось определить цвет. Попробуйте другое изображение.", reply_markup=builder_menu(lang))
         return
-    # Сохраняем сдвиг для пользователя
-    user_temp_data[chat_id] = {"shift": shift, "rgb": dominant_rgb}
-    color_hex = "#{:02x}{:02x}{:02x}".format(*dominant_rgb)
-    bot.send_message(chat_id, TEXTS[lang]["dominant_color"].format(color=color_hex, shift=round(shift, 1)), parse_mode='Markdown')
-    # Запрашиваем название темы
+    user_temp_data[chat_id] = {"shift": shift, "sat_boost": sat_boost, "rgb": best_color}
+    color_hex = "#{:02x}{:02x}{:02x}".format(*best_color)
+    sat_percent = int(sat_boost * 100)
+    bot.send_message(chat_id, TEXTS[lang]["dominant_color"].format(color=color_hex, shift=round(shift, 1), sat=sat_percent), parse_mode='Markdown')
     msg = bot.send_message(chat_id, TEXTS[lang]["enter_theme_name"], parse_mode='Markdown')
     bot.register_next_step_handler(msg, get_theme_name_for_custom, chat_id, lang)
 
@@ -547,8 +571,10 @@ def get_theme_name_for_custom(message, chat_id, lang):
         bot.send_message(chat_id, "❌ Ошибка: данные о цвете утеряны. Начните заново.", reply_markup=builder_menu(lang))
         return
     shift = data["shift"]
+    sat_boost = data["sat_boost"]
     rgb = data["rgb"]
-    build_theme_custom(chat_id, theme_name, shift, rgb, lang)
+    color_hex = "#{:02x}{:02x}{:02x}".format(*rgb)
+    build_theme_custom(chat_id, theme_name, shift, sat_boost, color_hex, lang)
     del user_temp_data[chat_id]
 
 def forward_to_support(original_message, text_prefix=""):
@@ -636,10 +662,12 @@ def run_flask():
         sys.stdout = old
 
 if __name__ == '__main__':
-    print("🤖 HuwiLabs bot v3.2 — добавлены свои цвета через обои")
+    print("🤖 HuwiLabs bot v4.0 — без сжатия, игнор служебных иконок, усиление насыщенности")
     print("👤 Админ: 6778865145")
     if not os.path.exists(EXAMPLE_THEME):
         print(f"⚠️ Файл '{EXAMPLE_THEME}' не найден! Скопируйте рабочий Lazurite Dream.hwt в Example.hwt")
+    if not os.path.exists(ICONS_ZIP):
+        print(f"⚠️ Файл '{ICONS_ZIP}' не найден! Билдер не будет работать.")
     Thread(target=run_flask, daemon=True).start()
     Thread(target=auto_ping, daemon=True).start()
     print("✅ Бот запущен")
